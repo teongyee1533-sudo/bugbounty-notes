@@ -1,1 +1,1 @@
-# bugbounty-notes-
+# bugbounty-notes
