@@ -1,95 +1,92 @@
 #!/bin/bash
-# DVWA 一键安装脚本 for Linux Lite / Ubuntu / Debian
-# 运行方式: sudo bash install_dvwa.sh
+# ============================================================
+#  DVWA 一键安装脚本  (Linux Lite / Ubuntu / Debian)
+#  用法:            sudo bash install_dvwa.sh
+#  自定义数据库密码: DB_PASS='你的密码' sudo -E bash install_dvwa.sh
+# ============================================================
 
-set -e
+set -euo pipefail
 
-echo "========================================"
-echo "  DVWA 一键安装脚本"
-echo "  适用于 Linux Lite / Ubuntu / Debian"
-echo "========================================"
-echo ""
+# ---------- 可配置项 ----------
+DB_NAME="dvwa"
+DB_USER="dvwa"
+DB_PASS="${DB_PASS:-p@ssw0rd}"     # 本地靶场用；可被环境变量覆盖
+WEB_ROOT="/var/www/html"
 
-# 检查是否以 root 运行
+# ---------- 检查 root ----------
 if [ "$EUID" -ne 0 ]; then
-    echo "❌ 请使用 sudo 运行此脚本: sudo bash install_dvwa.sh"
+    echo "请使用 sudo 运行: sudo bash install_dvwa.sh"
     exit 1
 fi
 
-# 获取当前登录的普通用户名（用于设置权限）
-SUDO_USER_NAME=${SUDO_USER:-$USER}
+export DEBIAN_FRONTEND=noninteractive
 
 echo "[1/8] 更新软件源并安装依赖..."
 apt update
-apt install -y apache2 mariadb-server mariadb-client php php-mysqli php-gd libapache2-mod-php git curl
+apt install -y apache2 mariadb-server mariadb-client \
+    php php-mysqli php-gd php-mbstring php-xml php-curl \
+    libapache2-mod-php git curl
 
-echo ""
 echo "[2/8] 启动 MariaDB 服务..."
 systemctl start mariadb
 systemctl enable mariadb
 
-echo ""
 echo "[3/8] 创建 DVWA 数据库和用户..."
 mysql -u root <<EOF
-CREATE DATABASE IF NOT EXISTS dvwa;
-CREATE USER IF NOT EXISTS 'dvwa'@'localhost' IDENTIFIED BY 'p@ssw0rd';
-GRANT ALL ON dvwa.* TO 'dvwa'@'localhost';
+DROP DATABASE IF EXISTS ${DB_NAME};
+CREATE DATABASE ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+DROP USER IF EXISTS '${DB_USER}'@'localhost';
+CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 EOF
 
-echo ""
 echo "[4/8] 下载 DVWA 源码..."
-cd /var/www/html
-if [ -d "dvwa" ]; then
-    echo "检测到已有 dvwa 目录，正在删除旧版本..."
+cd "${WEB_ROOT}"
+if [ -d dvwa ]; then
+    echo "检测到已有 dvwa 目录，删除旧版本..."
     rm -rf dvwa
 fi
 git clone https://github.com/digininja/DVWA.git dvwa
 
-echo ""
 echo "[5/8] 配置 DVWA 数据库连接..."
-cd /var/www/html/dvwa/config
+cd "${WEB_ROOT}/dvwa/config"
 cp config.inc.php.dist config.inc.php
-sed -i "s/\$_DVWA\[ 'db_server' \]\s*=\s*'127.0.0.1';/\$_DVWA[ 'db_server' ] = '127.0.0.1';/" config.inc.php
-sed -i "s/\$_DVWA\[ 'db_user' \]\s*=\s*'dvwa';/\$_DVWA[ 'db_user' ] = 'dvwa';/" config.inc.php
-sed -i "s/\$_DVWA\[ 'db_password' \]\s*=\s*'p@ssw0rd';/\$_DVWA[ 'db_password' ] = 'p@ssw0rd';/" config.inc.php
-sed -i "s/\$_DVWA\[ 'db_database' \]\s*=\s*'dvwa';/\$_DVWA[ 'db_database' ] = 'dvwa';/" config.inc.php
+sed -i "s/^\$_DVWA\[ 'db_server' \].*/\$_DVWA[ 'db_server' ] = '127.0.0.1';/"     config.inc.php
+sed -i "s/^\$_DVWA\[ 'db_database' \].*/\$_DVWA[ 'db_database' ] = '${DB_NAME}';/" config.inc.php
+sed -i "s/^\$_DVWA\[ 'db_user' \].*/\$_DVWA[ 'db_user' ] = '${DB_USER}';/"         config.inc.php
+sed -i "s/^\$_DVWA\[ 'db_password' \].*/\$_DVWA[ 'db_password' ] = '${DB_PASS}';/" config.inc.php
 
-echo ""
 echo "[6/8] 设置文件权限..."
-chown -R www-data:www-data /var/www/html/dvwa
-chmod 757 /var/www/html/dvwa/hackable/uploads
-mkdir -p /var/www/html/dvwa/external/phpids/0.6/lib/IDS/tmp
-chmod 646 /var/www/html/dvwa/external/phpids/0.6/lib/IDS/tmp/phpids_log.txt 2>/dev/null || true
+chown -R www-data:www-data "${WEB_ROOT}/dvwa"
+chmod -R 755 "${WEB_ROOT}/dvwa"
+chmod 775 "${WEB_ROOT}/dvwa/hackable/uploads"
 
-echo ""
+mkdir -p "${WEB_ROOT}/dvwa/external/phpids/0.6/lib/IDS/tmp"
+touch "${WEB_ROOT}/dvwa/external/phpids/0.6/lib/IDS/tmp/phpids_log.txt"
+chown www-data:www-data "${WEB_ROOT}/dvwa/external/phpids/0.6/lib/IDS/tmp/phpids_log.txt"
+chmod 664 "${WEB_ROOT}/dvwa/external/phpids/0.6/lib/IDS/tmp/phpids_log.txt"
+
 echo "[7/8] 配置 PHP (开启 allow_url_include)..."
-PHP_INI=$(find /etc/php -name "php.ini" -path "*/apache2/*" | head -n 1)
-if [ -n "$PHP_INI" ]; then
-    sed -i 's/allow_url_fopen = Off/allow_url_fopen = On/' "$PHP_INI"
-    sed -i 's/allow_url_include = Off/allow_url_include = On/' "$PHP_INI"
+PHP_INI=$(find /etc/php -path "*/apache2/php.ini" | sort -V | tail -n 1 || true)
+if [ -n "${PHP_INI:-}" ] && [ -f "$PHP_INI" ]; then
+    sed -i -E 's/^;?[[:space:]]*allow_url_fopen[[:space:]]*=.*/allow_url_fopen = On/'     "$PHP_INI"
+    sed -i -E 's/^;?[[:space:]]*allow_url_include[[:space:]]*=.*/allow_url_include = On/' "$PHP_INI"
     echo "已修改: $PHP_INI"
 else
-    echo "⚠️ 未找到 php.ini，请手动配置 allow_url_include = On"
+    echo "未找到 Apache 的 php.ini，请手动设置 allow_url_include = On"
 fi
 
-echo ""
-echo "[8/8] 重启 Apache 服务..."
+echo "[8/8] 检查并重启 Apache..."
+apache2ctl configtest
 systemctl restart apache2
 
 echo ""
-echo "========================================"
-echo "  ✅ DVWA 安装完成！"
-echo "========================================"
-echo ""
-echo "📌 访问地址: http://localhost/dvwa/setup.php"
-echo "📌 登录地址: http://localhost/dvwa/login.php"
-echo "📌 用户名:   admin"
-echo "📌 密码:     password"
-echo ""
-echo "⚠️  首次访问 setup.php 后，请点击页面底部的"
-echo "   【Create / Reset Database】按钮初始化数据库"
-echo ""
-echo "⚠️  安全提醒: DVWA 包含大量故意设计的漏洞，"
-echo "   请勿部署在公网或生产环境中！"
-echo ""
+echo "============================================"
+echo "  DVWA 安装完成！"
+echo "  访问:   http://localhost/dvwa/setup.php"
+echo "  登录:   http://localhost/dvwa/login.php"
+echo "  账号:   admin  /  密码: password"
+echo "  首次访问 setup.php 请点 [Create / Reset Database]"
+echo "  注意:   DVWA 含故意漏洞，切勿部署到公网！"
+echo "============================================"
